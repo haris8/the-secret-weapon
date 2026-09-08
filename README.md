@@ -49,3 +49,5 @@ The build is not a GitHub Pages static site. GitHub holds the source; Sites runs
 The working surface opens on Now, with broader horizons always visible. Quick capture asks for one thought; contexts live in optional details. Labeled controls, visible active filters, explicit saving feedback, undo, and keyboard shortcuts apply [Nielsen's usability heuristics](https://www.nngroup.com/articles/ten-usability-heuristics/). Touch controls, keyboard focus, accessible dialogs, and reduced-motion support are included. These are design choices, not claims of measured productivity gains.
 
 Two optional WebMCP tools expose the loaded action list and open a capture draft for user review. They feature-detect `document.modelContext`, share the app's state, validate inputs, and unregister on unmount. Runtime WebMCP verification depends on a supporting browser context.
+
+Initial verification: TypeScript and the local API integration checks passed. Browser interaction tests, physical Android installation, and runtime WebMCP checks have not been performed; no supported WebMCP test context was available in the build session.
