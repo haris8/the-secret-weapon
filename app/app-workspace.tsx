@@ -1,19 +1,21 @@
 'use client';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ArrowRight, Check, CircleCheck, Inbox, Layers, Plus, Search, Zap, RotateCcw, MapPin, Users, Folder, BookOpen, Clock3, X, Download, HelpCircle, RefreshCw, Trash2, ChevronRight, WifiOff } from 'lucide-react';
+import { ArrowRight, Check, CircleCheck, Inbox, Layers, Plus, Search, Zap, RotateCcw, MapPin, Users, Folder, BookOpen, Clock3, X, Download, HelpCircle, RefreshCw, Trash2, ChevronRight, WifiOff, Paperclip } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { Dialog, DialogContent, DialogTitle, DialogDescription } from '@/components/ui/dialog';
 import { exampleTasks, labels, horizons, makeTask, type Task, type Horizon } from '@/lib/tasks';
 import { validateTask } from '@/lib/validation';
+import { ActionAttachments } from '@/components/action-attachments';
+import type { QueuedAttachment, TaskAttachment } from '@/lib/attachments';
 
 type ApiBody = { error: string; tasks: Task[]; task: Task; lastReview: string|null; userKey: string; finishedAt: string };
 type Filter = { where: string; who: string; project: string; minutes: string; energy: string };
 const blankFilter: Filter = { where: '', who: '', project: '', minutes: '', energy: '' };
 const cleanTags = (tags: string[]) => [...new Set(tags.map(tag=>tag.trim()).filter(Boolean))];
-function readDraft(scope: string): { task: Task; isNew: boolean }|null {
-  try { const raw=sessionStorage.getItem(`secret-weapon-draft:${scope}`); if(!raw)return null; const value=JSON.parse(raw); const t=value.task; const valid=validateTask({...t,title:t.title||'Untitled draft',people:cleanTags(t.people),places:cleanTags(t.places)}); return {task:{...valid,title:t.title,people:t.people,places:t.places},isNew:value.isNew===true}; } catch { return null; }
+function readDraft(scope: string): { task: Task; isNew: boolean; attachmentChangesLost: boolean }|null {
+  try { const raw=sessionStorage.getItem(`secret-weapon-draft:${scope}`); if(!raw)return null; const value=JSON.parse(raw); const t=value.task; const valid=validateTask({...t,title:t.title||'Untitled draft',people:cleanTags(t.people),places:cleanTags(t.places)}); return {task:{...valid,title:t.title,people:t.people,places:t.places},isNew:value.isNew===true,attachmentChangesLost:value.attachmentChanges===true}; } catch { return null; }
 }
 const reviewSteps = [
   { title: 'Clear your inbox', text: 'Turn each thought into a concrete action. Assign a When, file it in the Cabinet, or let it go.', horizons: ['inbox'] },
@@ -38,6 +40,11 @@ export default function Workspace() {
   const [online, setOnline] = useState(true); const searchRef = useRef<HTMLInputElement>(null); const startup = useRef(false);
   const bridge = useRef<{ tasks: Task[]; capture: (title: string) => void }>({ tasks: [], capture: ()=>{} });
   const loadSequence=useRef(0); const ownerRef=useRef<string|null>(null); const [draftScope,setDraftScope]=useState<string|null>(null);
+  const [queuedFiles, setQueuedFiles] = useState<QueuedAttachment[]>([]);
+  const [removedFiles, setRemovedFiles] = useState<string[]>([]);
+  const submittingRef = useRef(false);
+  const demoFiles = useRef(new Map<string, File>());
+  const clearDraft = useCallback(() => { setDraft(null); setQueuedFiles([]); setRemovedFiles([]); }, []);
 
   const load = useCallback(async (quiet = false) => {
     if (busyRef.current) return;
@@ -45,12 +52,12 @@ export default function Workspace() {
     try {
       const response = await fetch('/api/tasks', { cache: 'no-store' }); const body = await response.json() as ApiBody;
       if(sequence!==loadSequence.current)return;
-      if (response.status === 401) { setSignedOut(true);setTasks([]);setLastReview(null);setUndo(null);setDraft(null);setEditorOpen(false);setDraftScope(null);ownerRef.current=null; setStatus('Sign in to save'); setLoaded(true); return; }
+      if (response.status === 401) { setSignedOut(true);setTasks([]);setLastReview(null);setUndo(null);clearDraft();setEditorOpen(false);setDraftScope(null);ownerRef.current=null; setStatus('Sign in to save'); setLoaded(true); return; }
       if (!response.ok) throw new Error(body.error);
-      if(ownerRef.current!==body.userKey){ownerRef.current=body.userKey; const stored=readDraft(body.userKey);setDraft(stored?.task??null);setIsNew(stored?.isNew??true);setEditorOpen(false);setUndo(null);setDraftScope(body.userKey);}
+      if(ownerRef.current!==body.userKey){ownerRef.current=body.userKey; const stored=readDraft(body.userKey);setDraft(stored?{...stored.task,attachments:body.tasks.find(task=>task.id===stored.task.id)?.attachments??[]}:null);setIsNew(stored?.isNew??true);setEditorOpen(false);setUndo(null);setDraftScope(body.userKey);setQueuedFiles([]);setRemovedFiles([]);setEditorError(stored?.attachmentChangesLost?'Your text draft was restored. Please reselect any unsaved files or removals.':'');}
       setTasks(body.tasks); setLastReview(body.lastReview); setSignedOut(false); setStatus('Cloud saved'); setLoaded(true); if (!quiet) setError('');
     } catch (err) { if(sequence!==loadSequence.current)return; setStatus('Could not connect'); if (!quiet) setError(err instanceof Error ? err.message : 'Could not connect. Please try again.'); setLoaded(true); }
-  }, []);
+  }, [clearDraft]);
 
   useEffect(() => {
     if (startup.current) return; startup.current = true;
@@ -58,7 +65,7 @@ export default function Workspace() {
     if (isDemo) { setDemo(true); setTasks(exampleTasks()); setLoaded(true); setStatus('Example workspace'); } else void load();
     if ('serviceWorker' in navigator) void navigator.serviceWorker.register('/sw.js').catch(()=>{});
   }, [load]);
-  useEffect(() => { if (!startup.current || demo || !draftScope) return; try { if (draft) sessionStorage.setItem(`secret-weapon-draft:${draftScope}`, JSON.stringify({ task: draft, isNew })); else sessionStorage.removeItem(`secret-weapon-draft:${draftScope}`); } catch { /* The open editor still retains the draft if browser storage is unavailable. */ } }, [draft, isNew, demo,draftScope]);
+  useEffect(() => { if (!startup.current || demo || !draftScope) return; try { if (draft) sessionStorage.setItem(`secret-weapon-draft:${draftScope}`, JSON.stringify({ task: draft, isNew, attachmentChanges:queuedFiles.length>0||removedFiles.length>0 })); else sessionStorage.removeItem(`secret-weapon-draft:${draftScope}`); } catch { /* The open editor still retains the draft if browser storage is unavailable. */ } }, [draft, isNew, demo,draftScope,queuedFiles,removedFiles]);
   useEffect(() => {
     const onConnection = () => setOnline(navigator.onLine); onConnection(); window.addEventListener('online', onConnection); window.addEventListener('offline', onConnection);
     const refresh = () => { if (!demo && document.visibilityState === 'visible' && navigator.onLine) void load(true); };
@@ -87,29 +94,93 @@ export default function Workspace() {
     return ()=>lifecycle.abort();
   }, []);
 
-  async function saveTask(task: Task, create = false): Promise<Task> {
+  async function saveTask(task: Task, create = false, keepBusy = false): Promise<Task> {
     if (busyRef.current) throw new Error('Please wait for the current change to finish.');
+    const existingFiles=task.attachments;
     task=validateTask({...task,people:cleanTags(task.people),places:cleanTags(task.places)}); ++loadSequence.current; busyRef.current = true; setBusy(true); setStatus('Saving…');
     try {
       let saved: Task;
-      if (demo) saved = { ...task, version: task.version + 1, updatedAt: new Date().toISOString() };
-      else { const response = await fetch('/api/tasks', { method: create ? 'POST' : 'PUT', headers: { 'Content-Type':'application/json' }, body: JSON.stringify(task) }); const body = await response.json() as ApiBody; if (!response.ok) { if (response.status === 401) {setSignedOut(true);setTasks([]);setLastReview(null);setUndo(null);setEditorOpen(false);setDraft(null);setDraftScope(null);ownerRef.current=null;} throw new Error(body.error || 'Could not save. Please try again.'); } saved = body.task; }
+      if (demo) saved = { ...task, attachments:existingFiles??[], version: task.version + 1, updatedAt: new Date().toISOString() };
+      else { const response = await fetch('/api/tasks', { method: create ? 'POST' : 'PUT', headers: { 'Content-Type':'application/json' }, body: JSON.stringify(task) }); const body = await response.json() as ApiBody; if (!response.ok) { if (response.status === 401) {setSignedOut(true);setTasks([]);setLastReview(null);setUndo(null);setEditorOpen(false);clearDraft();setDraftScope(null);ownerRef.current=null;} throw new Error(body.error || 'Could not save. Please try again.'); } saved = body.task; }
       setTasks(current => saved.deleted ? current.filter(t=>t.id!==saved.id) : current.some(t=>t.id===saved.id) ? current.map(t=>t.id===saved.id?saved:t) : [saved,...current]);
       setStatus(demo ? 'Example workspace' : 'Cloud saved'); setError(''); return saved;
-    } catch (err) { setStatus('Change not saved'); throw err; } finally { busyRef.current = false; setBusy(false); }
+    } catch (err) { setStatus('Change not saved'); throw err; } finally { if(!keepBusy) { busyRef.current = false; setBusy(false); } }
   }
-  async function submitDraft(e: React.FormEvent) { e.preventDefault(); if (!draft) return; try { await saveTask(draft, isNew); setToast(isNew ? `Captured in ${labels[draft.horizon]}.` : 'Action saved.'); setUndo(null); setDraft(null); setEditorOpen(false); setEditorError(''); } catch (err) { setEditorError(err instanceof Error ? err.message : 'Could not save. Your draft is still here.'); } }
+  async function submitDraft(e: React.SyntheticEvent<HTMLFormElement>) {
+    e.preventDefault();
+    if (!draft || busyRef.current || submittingRef.current) return;
+    submittingRef.current = true;
+    let saved: Task | null = null;
+    try {
+      saved = await saveTask(draft, isNew, true);
+      // The task already exists even if a later file operation fails.
+      setDraft(saved); setIsNew(false); setUndo(null); setEditorError('');
+      const updateFiles = (attachments: TaskAttachment[]) => {
+        saved = { ...saved!, attachments };
+        const current = saved;
+        setDraft(current);
+        setTasks(tasks => tasks.map(task => task.id === current.id ? current : task));
+      };
+      for (const id of removedFiles) {
+        setStatus('Removing file…');
+        if (!demo) {
+          const response = await fetch(`/api/attachments/${encodeURIComponent(id)}`, { method: 'DELETE' });
+          if (!response.ok) throw new Error((await response.json() as { error?: string }).error || 'Could not remove the file.');
+        } else demoFiles.current.delete(id);
+        updateFiles((saved.attachments ?? []).filter(file => file.id !== id));
+        setRemovedFiles(ids => ids.filter(item => item !== id));
+      }
+      for (const item of queuedFiles) {
+        setStatus(`Uploading ${item.file.name}…`);
+        let attachment: TaskAttachment;
+        if (demo) {
+          attachment = { id: item.id, taskId: saved.id, name: item.file.name, size: item.file.size, contentType: item.file.type, createdAt: new Date().toISOString() };
+          demoFiles.current.set(item.id, item.file);
+        } else {
+          const response = await fetch(`/api/attachments?taskId=${encodeURIComponent(saved.id)}`, { method:'POST', headers:{ 'Content-Type':item.file.type || 'application/octet-stream', 'X-File-Name':encodeURIComponent(item.file.name), 'X-File-Size':String(item.file.size), 'X-Attachment-Id':item.id }, body:item.file });
+          const body = await response.json() as { error?: string; attachment: TaskAttachment };
+          if (!response.ok) throw new Error(body.error || `Could not upload ${item.file.name}.`);
+          attachment = body.attachment;
+        }
+        updateFiles([...(saved.attachments ?? []).filter(file => file.id !== attachment.id), attachment]);
+        setQueuedFiles(files => files.filter(file => file.id !== item.id));
+      }
+      setStatus(demo ? 'Example workspace' : 'Cloud saved');
+      setToast(isNew ? `Captured in ${labels[saved.horizon]}.` : 'Action saved.');
+      clearDraft(); setEditorOpen(false);
+    } catch (err) {
+      setStatus(saved ? 'Action saved · check files' : 'Change not saved');
+      setEditorError(`${saved ? 'Your action is saved. Remaining file changes need another try. ' : ''}${err instanceof Error ? err.message : 'Could not save. Your draft is still here.'}`);
+    } finally { busyRef.current = false; setBusy(false); submittingRef.current = false; }
+  }
+  async function downloadAttachment(file: TaskAttachment) {
+    let blob: Blob;
+    if (demo) {
+      const local = demoFiles.current.get(file.id);
+      if (!local) throw new Error('This example file has expired. Please add it again.');
+      blob = local;
+    } else {
+      const response = await fetch(`/api/attachments/${encodeURIComponent(file.id)}`, { cache:'no-store' });
+      if (!response.ok) throw new Error((await response.json() as { error?: string }).error || 'Could not download this file.');
+      if (response.headers.get('content-type') !== 'application/octet-stream') throw new Error('Sign in again to download this file.');
+      blob = await response.blob();
+    }
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement('a'); anchor.href=url; anchor.download=file.name;
+    document.body.appendChild(anchor); anchor.click(); anchor.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 60000);
+  }
   async function complete(task: Task) { try { const saved = await saveTask({ ...task, completed: !task.completed }); setUndo({ before: task, after: saved }); setToast(task.completed ? 'Action restored.' : 'One less thing on your mind.'); } catch (err) { setError((err as Error).message); } }
-  async function deleteDraft() { if (!draft || isNew) return; try { const saved = await saveTask({ ...draft, deleted:true }); setUndo({ before: { ...draft, deleted:false }, after:saved }); setToast('Action deleted.'); setDraft(null); setEditorOpen(false); } catch (err) { setEditorError((err as Error).message); } }
+  async function deleteDraft() { if (!draft || isNew) return; try { const saved = await saveTask({ ...draft, deleted:true }); setUndo({ before: { ...draft, deleted:false }, after:saved }); setToast('Action deleted.'); clearDraft(); setEditorOpen(false); } catch (err) { setEditorError((err as Error).message); } }
   async function undoChange() { if (!undo) return; try { await saveTask({ ...undo.before, version:undo.after.version }); setUndo(null); setToast('Change undone.'); } catch (err) { setError((err as Error).message); } }
   async function finishReview() { if (busyRef.current) return; ++loadSequence.current; busyRef.current=true;setBusy(true); try { let finishedAt = new Date().toISOString(); if (!demo) { const response = await fetch('/api/review',{method:'POST'}); const body = await response.json() as ApiBody; if (!response.ok) throw new Error(body.error); finishedAt=body.finishedAt; } setLastReview(finishedAt); setReviewStep(0); navigate('now'); setToast('Review complete. You have a fresh starting point.');setUndo(null); } catch (err) { setError((err as Error).message); } finally { busyRef.current=false;setBusy(false); } }
-  function exportTasks() { const blob = new Blob([JSON.stringify({ format:'secret-weapon-v1', exportedAt:new Date().toISOString(), tasks, lastReview },null,2)],{type:'application/json'}); const url=URL.createObjectURL(blob); const anchor=document.createElement('a');anchor.href=url;anchor.download=`secret-weapon-${today()}.json`;anchor.click();setTimeout(()=>URL.revokeObjectURL(url),1000); }
+  function exportTasks() { const blob = new Blob([JSON.stringify({ format:'secret-weapon-v1', exportedAt:new Date().toISOString(), attachmentFilesIncluded:false, attachmentNote:'This backup includes file names and metadata. Download attachment files separately from each action.', tasks, lastReview },null,2)],{type:'application/json'}); const url=URL.createObjectURL(blob); const anchor=document.createElement('a');anchor.href=url;anchor.download=`secret-weapon-${today()}.json`;anchor.click();setTimeout(()=>URL.revokeObjectURL(url),1000); }
   const pending = tasks.filter(t=>!t.completed && t.horizon!=='reference');
   const options = useMemo(()=>({ where:[...new Set(tasks.flatMap(t=>t.places))].sort(), who:[...new Set(tasks.flatMap(t=>t.people))].sort(), project:[...new Set(tasks.map(t=>t.project).filter(Boolean))].sort() }),[tasks]);
   const activeFilters = Object.entries(filters).filter(([,value])=>value);
   const matches = (t: Task) => (!filters.where || t.places.includes(filters.where)) && (!filters.who || t.people.includes(filters.who)) && (!filters.project || t.project===filters.project) && (!filters.minutes || (t.minutes>0 && t.minutes<=Number(filters.minutes))) && (!filters.energy || t.energy===filters.energy);
   const list = tasks.filter(t => {
-    if (query) return [t.title,t.notes,t.project,...t.people,...t.places].join(' ').toLowerCase().includes(query.toLowerCase()) && matches(t);
+    if (query) return [t.title,t.notes,t.project,...t.people,...t.places,...(t.attachments??[]).map(file=>file.name)].join(' ').toLowerCase().includes(query.toLowerCase()) && matches(t);
     if (view==='review') return !t.completed && reviewSteps[reviewStep].horizons.includes(t.horizon) && matches(t);
     return (view==='completed' ? t.completed : !t.completed && (view==='all' ? t.horizon!=='reference' : t.horizon===view)) && matches(t);
   }).sort((a,b) => Number(a.completed)-Number(b.completed) || (a.due || '9999').localeCompare(b.due || '9999') || a.createdAt.localeCompare(b.createdAt));
@@ -140,7 +211,7 @@ export default function Workspace() {
     <div className="list-heading"><h2>{query?'Search results':view==='review'?'Actions to review':labels[view]} <span>{list.length}</span></h2><Button variant="ghost" className="refresh-button" disabled={busy||demo} aria-label="Refresh actions from cloud" onClick={()=>void load()}><RefreshCw size={14}/>Refresh</Button></div>
     {view==='review'&&reviewStep===4&&!query?<div className="project-check">{projects.length===0?<p>No active projects yet. Add a project in an action’s details whenever an outcome needs several steps.</p>:projects.map(project=>{const ready=pending.some(t=>t.project===project&&['now','next'].includes(t.horizon));return <div key={project}><Folder size={18}/><span><strong>{project}</strong><small>{ready?'Has an action in Now or Next':'Needs a next action'}</small></span><Button variant="outline" onClick={()=>{setView('all');filter('project',project);}}>View actions</Button></div>;})}</div>:<div className="task-list" aria-busy={!loaded||busy}>{!loaded?<div className="empty-state"><RefreshCw/><h3>Opening your workspace…</h3></div>:list.map(task=><article className={`task-row ${task.completed?'is-completed':''}`} key={task.id}>
       {task.horizon!=='reference'?<button disabled={!canWrite} className="complete-control" aria-label={`${task.completed?'Restore':'Complete'} ${task.title}`} onClick={()=>void complete(task)}>{task.completed&&<Check size={17}/>}</button>:<span className="reference-icon"><BookOpen size={20}/></span>}
-      <button className="task-body task-open" onClick={()=>edit(task)}><h3>{task.title}</h3>{task.notes&&<p>{task.notes}</p>}<div className="task-meta">{(query||view==='all'||view==='review')&&<span className={`horizon-chip ${task.horizon}`}>{task.completed?'Completed':labels[task.horizon]}</span>}{task.project&&<span><Folder/>{task.project}</span>}{task.places.map(p=><span className="context-chip" key={p}><MapPin/>{p}</span>)}{task.people.map(p=><span className="context-chip" key={p}><Users/>{p}</span>)}{task.due&&<span className={`due-label ${task.due<today()&&!task.completed?'overdue':''}`}><Clock3/>{task.horizon==='waiting'?'Follow up ':''}{dateLabel(task.due)}{task.due<today()&&!task.completed?' · overdue':''}</span>}</div></button>{task.minutes>0&&<span className="duration">{task.minutes} min</span>}
+      <button className="task-body task-open" onClick={()=>edit(task)}><h3>{task.title}</h3>{task.notes&&<p>{task.notes}</p>}<div className="task-meta">{(task.attachments?.length??0)>0&&<span aria-label={`${task.attachments!.length} attachments`}><Paperclip/>{task.attachments!.length} {task.attachments!.length===1?'file':'files'}</span>}{(query||view==='all'||view==='review')&&<span className={`horizon-chip ${task.horizon}`}>{task.completed?'Completed':labels[task.horizon]}</span>}{task.project&&<span><Folder/>{task.project}</span>}{task.places.map(p=><span className="context-chip" key={p}><MapPin/>{p}</span>)}{task.people.map(p=><span className="context-chip" key={p}><Users/>{p}</span>)}{task.due&&<span className={`due-label ${task.due<today()&&!task.completed?'overdue':''}`}><Clock3/>{task.horizon==='waiting'?'Follow up ':''}{dateLabel(task.due)}{task.due<today()&&!task.completed?' · overdue':''}</span>}</div></button>{task.minutes>0&&<span className="duration">{task.minutes} min</span>}
     </article>)}{loaded&&!list.length&&<div className="empty-state">{view==='inbox'?<Inbox/>:<CircleCheck/>}<h3>{query||activeFilters.length?'No matching actions.':view==='inbox'?'A clear inbox.':view==='completed'?'Your progress will live here.':view==='reference'?'A home for useful things.':'Room to breathe.'}</h3><p>{query||activeFilters.length?'Try a different search or loosen a context filter.':view==='now'?'Choose a few actions from Next, or capture a new thought.':view==='inbox'?'Capture anything on your mind. You can sort it out here.':'Add an action when you’re ready.'}</p>{query||activeFilters.length?<Button variant="outline" onClick={()=>{setQuery('');setFilters(blankFilter);}}>Clear search and filters</Button>:<Button variant="outline" onClick={()=>view==='now'?navigate('next'):capture() }>{view==='now'?'Explore Next':'Capture a thought'}<ArrowRight/></Button>}</div>}</div>}
     {view==='review'&&!query?<div className="review-footer"><Button variant="outline" disabled={reviewStep===0} onClick={()=>setReviewStep(s=>s-1)}>Back</Button>{reviewStep<4?<Button className="primary-action" onClick={()=>setReviewStep(s=>s+1)}>Continue<ChevronRight/></Button>:<Button className="primary-action" disabled={!canWrite} onClick={()=>void finishReview()}>Finish review<Check/></Button>}</div>:<button className="inline-add" onClick={()=>capture('',view==='reference'?'reference':'inbox')}><Plus size={18}/>{view==='reference'?'Add a reference note':'Capture another thought'}</button>}
     </section><aside className="right-rail"><section className="focus-card"><span className="eyebrow">THE POWER OF CONTEXT</span><h2>Less noise.<br/>The right next move.</h2><p>Find the actions that fit where you are and who you’re with.</p>
@@ -153,12 +224,13 @@ export default function Workspace() {
   <Dialog open={editorOpen} onOpenChange={open=>{if(!busy)setEditorOpen(open);}}><DialogContent className="action-dialog" showCloseButton={!busy}><DialogTitle>{isNew?'Give that thought a home.':'Action details'}</DialogTitle><DialogDescription>{isNew?'Capture now. Organize when you’re ready.':'Keep the action, its context, and supporting notes together.'}</DialogDescription>{draft&&<form onSubmit={submitDraft}><fieldset disabled={busy}>
     <label className="field"><span>{draft.horizon==='reference'?'Note title':'What’s on your mind?'}</span><Input autoFocus required maxLength={300} value={draft.title} placeholder="Start with a thought or a concrete next action…" onChange={e=>patchDraft({title:e.target.value})}/></label>
     <label className="field"><span>Notes</span><Textarea maxLength={50000} rows={5} value={draft.notes} placeholder="Details, meeting notes, links, or a quick checklist…" onChange={e=>patchDraft({notes:e.target.value})}/></label>
+    <ActionAttachments key={draft.id} attachments={draft.attachments??[]} queued={queuedFiles} removed={removedFiles} disabled={!canWrite} demo={demo} onQueue={setQueuedFiles} onRemove={setRemovedFiles} onDownload={downloadAttachment}/>
     <div className="editor-grid"><SelectField label="When" value={draft.horizon} onChange={v=>patchDraft({horizon:v as Horizon})}>{horizons.map(h=><option key={h} value={h}>{labels[h]}</option>)}</SelectField><label className="field"><span>{draft.horizon==='waiting'?'Follow-up date (optional)':'Due date (optional)'}</span><Input type="date" value={draft.due} onChange={e=>patchDraft({due:e.target.value})}/></label></div>
     <details className="context-details" open={!isNew||undefined}><summary>Add context & details</summary><div className="editor-grid"><label className="field"><span>What · project</span><Input list="project-options" maxLength={80} value={draft.project} onChange={e=>patchDraft({project:e.target.value})} placeholder="e.g. Website refresh"/><datalist id="project-options">{options.project.map(v=><option key={v} value={v}/>)}</datalist></label><label className="field"><span>Where · comma-separated</span><Input maxLength={1600} value={draft.places.join(',')} onChange={e=>patchDraft({places:e.target.value.split(',')})} placeholder="Home, Computer"/></label><label className="field"><span>Who · comma-separated</span><Input maxLength={1600} value={draft.people.join(',')} onChange={e=>patchDraft({people:e.target.value.split(',')})} placeholder="Alex, Sam"/></label><label className="field"><span>Duration · minutes</span><Input type="number" min={0} max={1440} value={draft.minutes||''} onChange={e=>patchDraft({minutes:Number(e.target.value)})} placeholder="Not set"/></label><SelectField label="Energy" value={draft.energy} onChange={v=>patchDraft({energy:v})}><option value="">Not set</option><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option></SelectField></div></details>
     {editorError&&<p className="form-error" role="alert">{editorError}</p>}{signedOut&&!demo&&<p className="form-error">Sign in to save. Close the editor to find the sign-in link; your draft will remain in this tab.</p>}
-    <div className="editor-footer">{!isNew&&<Button type="button" variant="ghost" aria-label="Delete action" disabled={!canWrite} onClick={()=>void deleteDraft()}><Trash2/></Button>}<Button type="button" variant="ghost" disabled={busy} onClick={()=>{setDraft(null);setEditorOpen(false);}}>Discard draft</Button><Button type="submit" className="primary-action" disabled={!canWrite}>{busy?'Saving…':demo?'Save example':isNew?'Capture thought':'Save changes'}<Check/></Button></div>
+    <div className="editor-footer">{!isNew&&<Button type="button" variant="ghost" aria-label="Delete action" disabled={!canWrite} onClick={()=>void deleteDraft()}><Trash2/></Button>}<Button type="button" variant="ghost" disabled={busy} onClick={()=>{clearDraft();setEditorOpen(false);}}>Discard draft</Button><Button type="submit" className="primary-action" disabled={!canWrite}>{busy?'Saving…':demo?'Save example':isNew?'Capture thought':'Save changes'}<Check/></Button></div>
   </fieldset></form>}</DialogContent></Dialog>
-  <Dialog open={help} onOpenChange={setHelp}><DialogContent className="help-dialog"><DialogTitle>A trusted place for your open loops.</DialogTitle><DialogDescription>The Secret Weapon, built around your next action.</DialogDescription><div className="help-copy"><ol><li><strong>Capture freely.</strong> Put thoughts in the Inbox without stopping to organize them.</li><li><strong>Clarify the next action.</strong> Choose a When. Add people, places, and a project when useful.</li><li><strong>Work with context.</strong> Combine a time horizon with your situation. A horizon is a priority, not a deadline.</li><li><strong>Review each week.</strong> Revisit commitments, follow up on Waiting, and reconsider Someday.</li></ol><p>Cabinet holds reference notes. Completed keeps your history. Use <kbd>N</kbd> to capture and <kbd>/</kbd> to search.</p><h3>On Android</h3><p>Open this site in Chrome and use its menu to install the app or add it to your home screen. Sign in with the same ChatGPT account. An internet connection is needed to load and save tasks.</p><h3>Your data</h3><p>Personal actions are saved privately in the cloud. Download a JSON backup whenever you want. Example workspace changes are temporary. This app does not connect to or import from Evernote yet.</p><div className="help-actions"><Button variant="outline" disabled={!loaded} onClick={exportTasks}><Download/>Export backup</Button><a className="text-link" href={demo?'/':'/?demo=1'}>{demo?'My workspace':'Example workspace'}<ArrowRight size={16}/></a></div><p className="source-note">Inspired by <a href="https://thesecretweapon.org/the-secret-weapon-manifesto/the-secret-weapon/" target="_blank" rel="noreferrer">The Secret Weapon method</a> and <a href="https://gettingthingsdone.com/what-is-gtd/" target="_blank" rel="noreferrer">Getting Things Done</a>. An independent implementation; not affiliated with Evernote or the original method’s creators.</p>{!demo&&!signedOut&&<a className="text-link" href="/signout-with-chatgpt?return_to=%2F" target="_top" onClick={()=>{if(draftScope)sessionStorage.removeItem(`secret-weapon-draft:${draftScope}`);setDraft(null);setTasks([]);}}>Sign out</a>}</div></DialogContent></Dialog>
+  <Dialog open={help} onOpenChange={setHelp}><DialogContent className="help-dialog"><DialogTitle>A trusted place for your open loops.</DialogTitle><DialogDescription>The Secret Weapon, built around your next action.</DialogDescription><div className="help-copy"><ol><li><strong>Capture freely.</strong> Put thoughts in the Inbox without stopping to organize them.</li><li><strong>Clarify the next action.</strong> Choose a When. Add people, places, and a project when useful.</li><li><strong>Work with context.</strong> Combine a time horizon with your situation. A horizon is a priority, not a deadline.</li><li><strong>Review each week.</strong> Revisit commitments, follow up on Waiting, and reconsider Someday.</li></ol><p>Cabinet holds reference notes. Completed keeps your history. Use <kbd>N</kbd> to capture and <kbd>/</kbd> to search.</p><h3>On Android</h3><p>Open this site in Chrome and use its menu to install the app or add it to your home screen. Sign in with the same ChatGPT account. An internet connection is needed to load and save tasks.</p><h3>Your data</h3><p>Personal actions are saved privately in the cloud. Download a JSON backup of your notes and file metadata whenever you want. Attachment files must be downloaded separately from each action. Example workspace changes are temporary. This app does not connect to or import from Evernote yet.</p><div className="help-actions"><Button variant="outline" disabled={!loaded} onClick={exportTasks}><Download/>Export backup</Button><a className="text-link" href={demo?'/':'/?demo=1'}>{demo?'My workspace':'Example workspace'}<ArrowRight size={16}/></a></div><p className="source-note">Inspired by <a href="https://thesecretweapon.org/the-secret-weapon-manifesto/the-secret-weapon/" target="_blank" rel="noreferrer">The Secret Weapon method</a> and <a href="https://gettingthingsdone.com/what-is-gtd/" target="_blank" rel="noreferrer">Getting Things Done</a>. An independent implementation; not affiliated with Evernote or the original method’s creators.</p>{!demo&&!signedOut&&<a className="text-link" href="/signout-with-chatgpt?return_to=%2F" target="_top" onClick={()=>{if(draftScope)sessionStorage.removeItem(`secret-weapon-draft:${draftScope}`);clearDraft();setTasks([]);}}>Sign out</a>}</div></DialogContent></Dialog>
   {toast&&<div className="toast" role="status"><Check size={17}/><span>{toast}</span>{undo&&<button disabled={busy} onClick={()=>void undoChange()}>Undo</button>}<button aria-label="Dismiss notification" onClick={()=>{setToast('');setUndo(null);}}><X size={16}/></button></div>}
   </div>;
 }

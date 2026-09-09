@@ -1,6 +1,7 @@
+import type { TaskAttachment } from './attachments';
 export const horizons = ['inbox', 'now', 'next', 'soon', 'later', 'someday', 'waiting', 'reference'] as const;
 export type Horizon = typeof horizons[number];
-export type Task = { id: string; title: string; notes: string; horizon: Horizon; project: string; people: string[]; places: string[]; due: string; minutes: number; energy: string; completed: boolean; deleted?: boolean; createdAt: string; updatedAt: string; version: number; };
+export type Task = { id: string; title: string; notes: string; horizon: Horizon; project: string; people: string[]; places: string[]; due: string; minutes: number; energy: string; completed: boolean; deleted?: boolean; createdAt: string; updatedAt: string; version: number; attachments?: TaskAttachment[]; };
 export const labels: Record<string, string> = { inbox: 'Inbox', now: '1-Now', next: '2-Next', soon: '3-Soon', later: '4-Later', someday: '5-Someday', waiting: 'Waiting', reference: 'Cabinet', completed: 'Completed', all: 'All actions', review: 'Weekly review' };
 export function makeTask(title: string, horizon: Horizon = 'inbox'): Task { return { id: crypto.randomUUID(), title, horizon, notes: '', project: '', people: [], places: [], due: '', minutes: 0, energy: '', completed: false, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), version: 1 }; }
 export function exampleTasks(): Task[] {

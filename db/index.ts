@@ -3,6 +3,7 @@ import { drizzle } from 'drizzle-orm/d1';
 import * as schema from './schema';
 
 export function getRawDb(): D1Database { if (!env.DB) throw new Error('Database unavailable'); return env.DB; }
+export function getAttachmentBucket(): R2Bucket { if (!env.ATTACHMENTS) throw new Error('Attachment storage unavailable'); return env.ATTACHMENTS; }
 
 export function getDb() {
   if (!env.DB) {

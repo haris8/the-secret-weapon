@@ -11,10 +11,11 @@ A private, responsive productivity app inspired by [The Secret Weapon](https://t
 - Search notes, actions, and completed history. Complete, restore, soft-delete, and undo changes.
 - Walk through a five-step weekly review and save its completion date.
 - Save personal records to Cloudflare D1 behind Sites-managed ChatGPT sign-in. Queries and writes are scoped to the authenticated user. Optimistic versions reject stale edits from another device.
-- Export a readable JSON backup. A separate `?demo=1` workspace is temporary and never seeds personal records.
+- Attach PDFs, images, documents, and other files to actions and reference notes. Choose files or drag and drop, then save; download or remove them from the editor. Up to 10 files per action, 10 MB each, stored privately in R2 with ownership metadata in D1. Search includes filenames.
+- Export a readable JSON backup of notes and attachment metadata (download the actual files separately). A separate `?demo=1` workspace is temporary and never seeds personal records.
 - Install on Android from a supporting browser. The app needs a connection for records; its service worker caches only a public offline notice and icons. It never caches private responses or login routes.
 
-This is an independent implementation. It does not integrate with Evernote, import ENEX files, provide push reminders, or implement recurring tasks yet. Export is currently one-way; there is no backup restore UI. Plain-text notes preserve line breaks; rich-text formatting and attachments are not included.
+This is an independent implementation. It does not integrate with Evernote, import ENEX files, provide push reminders, or implement recurring tasks yet. Export is currently one-way; there is no backup restore UI. Plain-text notes preserve line breaks; rich-text formatting is not included.
 
 ## Development
 
@@ -51,3 +52,11 @@ The working surface opens on Now, with broader horizons always visible. Quick ca
 Two optional WebMCP tools expose the loaded action list and open a capture draft for user review. They feature-detect `document.modelContext`, share the app's state, validate inputs, and unregister on unmount. Runtime WebMCP verification depends on a supporting browser context.
 
 Initial verification: TypeScript and the local API integration checks passed. Browser interaction tests, physical Android installation, and runtime WebMCP checks have not been performed; no supported WebMCP test context was available in the build session.
+
+## Attachments
+
+Files upload when the action is saved. Closing the editor keeps selected files in memory; Discard draft drops unsaved selections. Reload restores the text draft, but unsaved files and removals must be selected again. Partial upload failures preserve remaining selections for retry without creating another action or duplicate attachment. Demo files remain in memory only.
+
+Downloads always require the signed-in owner and an active parent action, use private/no-store responses, and are served as downloads instead of executable inline content. Soft-deleting an action preserves its files for Undo; removed attachments become inaccessible immediately. The server enforces both actual byte limits and the per-action count. File metadata supplied in task JSON is ignored; only successful uploads create attachments.
+
+Apply local migrations before development. Sites provisions the ATTACHMENTS R2 binding on publication. Run `node scripts/verify-attachments.mjs` against the local server to check upload/download integrity, access controls, limits, retry behavior, and task deletion/undo.
